@@ -64,12 +64,12 @@ def run(sid):
     challenge_id = sess.get("challenge_id", "")
 
     # Build attestation request body
-    # IMPORTANT: challenge_id is REQUIRED by the server!
+    # IMPORTANT: server uses snake_case field names!
     attest_body = {
         "challenge_id": challenge_id,
         "nonce": nonce,
         "signature": signature,
-        "publicKey": sess["pub_raw"],
+        "public_key": sess["pub_raw"],
         "fingerprint": FINGERPRINT,
     }
 
@@ -81,7 +81,7 @@ def run(sid):
             "challenge_id": challenge_id,
             "nonce": nonce[:30] + "...",
             "signature": signature[:30] + "...",
-            "publicKey": sess["pub_raw"][:30] + "...",
+            "public_key": sess["pub_raw"][:30] + "...",
             "fingerprintKeys": list(FINGERPRINT.keys()),
         },
     }
@@ -95,7 +95,7 @@ def run(sid):
 
     # If failed, try 2: SPKI key format
     if status != 200 and sess.get("pub_spki"):
-        attest_body["publicKey"] = sess["pub_spki"]
+        attest_body["public_key"] = sess["pub_spki"]
         status2, body2, _ = http_post(url, body=attest_body)
         ms2 = int((time.time() - t0) * 1000)
         result["attempt2"] = {"status": status2, "body": body2, "timeMs": ms2}
