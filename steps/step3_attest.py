@@ -60,8 +60,13 @@ def run(sid):
             "error": "Signing failed: %s" % e,
         }
 
+    # Get challenge_id from step 2
+    challenge_id = sess.get("challenge_id", "")
+
     # Build attestation request body
+    # IMPORTANT: challenge_id is REQUIRED by the server!
     attest_body = {
+        "challenge_id": challenge_id,
         "nonce": nonce,
         "signature": signature,
         "publicKey": sess["pub_raw"],
@@ -73,6 +78,7 @@ def run(sid):
         "url": url,
         "timeMs": 0,
         "requestBody": {
+            "challenge_id": challenge_id,
             "nonce": nonce[:30] + "...",
             "signature": signature[:30] + "...",
             "publicKey": sess["pub_raw"][:30] + "...",
