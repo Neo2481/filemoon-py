@@ -1,18 +1,30 @@
 """
 step5_decrypt.py
 
-Decrypt AES-256-GCM encrypted payload → JSON with video sources.
+Decrypt AES-256-GCM encrypted payload -> JSON with video sources.
 
-If this fails:
-  - "Key is X bytes" = key_parts format wrong
-  - "Ciphertext too short" = payload truncated
-  - "InvalidTag" = wrong key, wrong IV, or tampered data
+The playback response has:
+  playback.key_parts  -> concat to form AES-256 key (32 bytes)
+  playback.iv         -> nonce for AES-GCM
+  playback.payload    -> ciphertext (first decryption)
+  playback.decrypt_keys -> {edge_1, edge_2, legacy_fallback} (extra keys)
+  playback.iv2        -> nonce for second payload
+  playback.payload2   -> second ciphertext
 
 Needs: pip install cryptography
 """
 
 import time
-from helpers import decrypt_payload, get_session
+from helpers import b64url_decode, b64url_encode, decrypt_payload, get_session
+
+
+def try_decrypt(enc, label=""):
+    """Try to decrypt with standard key_parts. Returns (ok, result_or_error)."""
+    try:
+        decrypted = decrypt_payload(enc)
+        return True, decrypted
+    except Exception as e:
+        return False, "%s decryption failed: %s" % (label, e)
 
 
 def run(sid):
@@ -39,28 +51,46 @@ def run(sid):
             "rawPreview": str(body)[:200],
         }
 
-    # Get the encrypted payload (might be nested under "playback")
+    result = {"step": "5-decrypt"}
+
+    # Get the encrypted payload (nested under "playback")
     enc = body.get("playback", body)
+    result["encryptedKeys"] = list(enc.keys()) if isinstance(enc, dict) else "N/A"
 
-    result = {
-        "step": "5-decrypt",
-        "encryptedKeys": list(enc.keys()) if isinstance(enc, dict) else "N/A",
-    }
+    # Show what we have
+    if isinstance(enc, dict):
+        result["hasKeyParts"] = bool(enc.get("key_parts"))
+        result["hasIv"] = bool(enc.get("iv"))
+        result["hasPayload"] = bool(enc.get("payload"))
+        result["hasDecryptKeys"] = bool(enc.get("decrypt_keys"))
+        result["hasIv2"] = bool(enc.get("iv2"))
+        result["hasPayload2"] = bool(enc.get("payload2"))
 
-    # Try decryption
-    try:
-        decrypted = decrypt_payload(enc)
+        # Show key_parts info
+        key_parts = enc.get("key_parts", [])
+        if key_parts:
+            key = b"".join(b64url_decode(p) for p in key_parts)
+            result["keyLength"] = len(key)
+            result["keyPartsCount"] = len(key_parts)
+
+        # Show decrypt_keys if present
+        dk = enc.get("decrypt_keys", {})
+        if dk:
+            result["decryptKeysAvailable"] = list(dk.keys())
+
+    # ── Try main payload decryption ──
+    ok, dec_result = try_decrypt(enc, "Main payload")
+    if ok:
         ms = int((time.time() - t0) * 1000)
-
-        sources = decrypted.get("sources", [])
-        subtitles = decrypted.get("subtitles", [])
+        sources = dec_result.get("sources", [])
+        subtitles = dec_result.get("subtitles", [])
 
         result["success"] = True
+        result["decryptedWith"] = "key_parts"
         result["timeMs"] = ms
         result["sourceCount"] = len(sources)
         result["subtitleCount"] = len(subtitles)
 
-        # Extract URLs
         urls = []
         for i, src in enumerate(sources):
             urls.append({
@@ -70,23 +100,59 @@ def run(sid):
                 "url": src.get("url", ""),
             })
         result["sources"] = urls
-        result["fullDecrypted"] = decrypted
+        result["fullDecrypted"] = dec_result
+        return result
 
-    except ImportError:
-        ms = int((time.time() - t0) * 1000)
-        result["success"] = False
-        result["timeMs"] = ms
-        result["error"] = "cryptography not installed"
-        result["fix"] = "pip install cryptography"
+    # Main failed, show error info
+    result["mainDecryptError"] = dec_result
 
-    except Exception as e:
-        ms = int((time.time() - t0) * 1000)
-        result["success"] = False
-        result["timeMs"] = ms
-        result["error"] = str(e)
-        result["errorType"] = type(e).__name__
-        result["keyPartsCount"] = len(enc.get("key_parts", [])) if isinstance(enc, dict) else 0
-        result["ivLength"] = len(str(enc.get("iv", ""))) if isinstance(enc, dict) else 0
-        result["payloadLength"] = len(str(enc.get("payload", ""))) if isinstance(enc, dict) else 0
+    # ── Try payload2 with iv2 ──
+    if isinstance(enc, dict) and enc.get("iv2") and enc.get("payload2"):
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            key_parts = enc.get("key_parts", [])
+            key = b"".join(b64url_decode(p) for p in key_parts)
+            iv2 = b64url_decode(enc["iv2"])
+            ct2 = b64url_decode(enc["payload2"])
+            plaintext2 = AESGCM(key).decrypt(iv2, ct2, None)
+            import json
+            dec2 = json.loads(plaintext2.decode("utf-8"))
+            ms = int((time.time() - t0) * 1000)
+            result["success"] = True
+            result["decryptedWith"] = "payload2+iv2"
+            result["timeMs"] = ms
+            result["fullDecrypted"] = dec2
+            return result
+        except Exception as e:
+            result["payload2Error"] = str(e)
+
+    # ── Try decrypt_keys ──
+    if isinstance(enc, dict) and enc.get("decrypt_keys"):
+        dk = enc["decrypt_keys"]
+        result["decryptKeysAttempt"] = {}
+        for key_name, key_b64 in dk.items():
+            try:
+                from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+                iv = b64url_decode(enc.get("iv", ""))
+                ct = b64url_decode(enc.get("payload", ""))
+                key_bytes = b64url_decode(key_b64)
+                plaintext = AESGCM(key_bytes).decrypt(iv, ct, None)
+                import json
+                dec = json.loads(plaintext.decode("utf-8"))
+                result["success"] = True
+                result["decryptedWith"] = "decrypt_keys.%s" % key_name
+                result["fullDecrypted"] = dec
+                return result
+            except Exception as e:
+                result["decryptKeysAttempt"][key_name] = str(e)
+
+    # All decryption attempts failed
+    ms = int((time.time() - t0) * 1000)
+    result["success"] = False
+    result["timeMs"] = ms
+    result["error"] = "All decryption methods failed"
+    result["keyPartsCount"] = len(enc.get("key_parts", [])) if isinstance(enc, dict) else 0
+    result["ivLength"] = len(str(enc.get("iv", ""))) if isinstance(enc, dict) else 0
+    result["payloadLength"] = len(str(enc.get("payload", ""))) if isinstance(enc, dict) else 0
 
     return result
