@@ -99,6 +99,14 @@ def run(sid):
                 result["token"] = token
                 result["tokenPreview"] = token[:40] + "..." if len(token) > 40 else token
                 result["tokenFound"] = True
+
+            # Save server-returned IDs for step 4 (playback needs these)
+            if resp_body.get("viewer_id"):
+                sess["server_viewer_id"] = resp_body["viewer_id"]
+            if resp_body.get("device_id"):
+                sess["server_device_id"] = resp_body["device_id"]
+            if "confidence" in resp_body:
+                sess["confidence"] = resp_body["confidence"]
     else:
         result["hint"] = (
             "Status %d — check sentBodyPreview vs real browser payload. "
