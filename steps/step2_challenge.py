@@ -3,10 +3,8 @@ step2_challenge.py
 
 POST /api/videos/access/challenge — get nonce to sign.
 
-If this fails:
-  - 403 = CF challenge not passed (step 1 failed)
-  - 404 = wrong API endpoint
-  - No nonce in response = API changed format
+Response contains: nonce, challenge_id
+We also generate an ECDSA P-256 keypair and save JWK to session.
 """
 
 import time
@@ -17,7 +15,7 @@ from helpers import (
 
 def run(sid):
     """
-    Step 2: POST challenge → get nonce + generate ECDSA keypair.
+    Step 2: POST challenge -> get nonce + generate ECDSA keypair.
     Returns dict with nonce, public key, timing.
     """
     sess = get_session(sid)
@@ -42,24 +40,29 @@ def run(sid):
         result["nonce"] = nonce
         result["noncePreview"] = nonce[:30] + "..."
 
-        # IMPORTANT: Save challenge_id — step 3 needs it!
+        # Save challenge_id for step 3
         challenge_id = body.get("challenge_id", "")
         sess["challenge_id"] = challenge_id
         result["challenge_id"] = challenge_id
 
         # Generate ECDSA P-256 keypair for step 3
         try:
-            pk, raw, spki = generate_keypair()
+            pk, jwk, raw, spki = generate_keypair()
             sess["private_key"] = pk
+            sess["pub_jwk"] = jwk
             sess["pub_raw"] = raw
             sess["pub_spki"] = spki
             result["keyGenerated"] = True
-            result["publicKeyPreview"] = raw[:30] + "..."
+            result["jwkPreview"] = {
+                "kty": jwk["kty"],
+                "crv": jwk["crv"],
+                "x": jwk["x"][:20] + "...",
+                "y": jwk["y"][:20] + "...",
+            }
         except ImportError:
-            result["keyError"] = "cryptography not installed — run: pip install cryptography"
+            result["keyError"] = "cryptography not installed"
         except Exception as e:
             result["keyError"] = str(e)
-
     else:
         result["nonceFound"] = False
         if isinstance(body, dict):
