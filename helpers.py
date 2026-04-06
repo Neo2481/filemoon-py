@@ -73,6 +73,7 @@ def get_session(sid):
     if sid not in _sessions:
         _sessions[sid] = {
             "id": sid,
+            "challenge_id": None,
             "nonce": None,
             "token": None,
             "code": None,
