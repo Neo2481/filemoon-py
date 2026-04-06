@@ -5,7 +5,7 @@ If this file fails to import, NOTHING works.
 Check: pip install cryptography requests curl_cffi
 """
 
-import os, json, base64, hashlib, time
+import os, json, base64, hashlib, time, uuid
 
 # ═══════════════════════════════════════════
 #  CONFIG
@@ -34,31 +34,68 @@ API_HEADERS = {
     "Sec-Fetch-Site": "same-origin",
 }
 
-FINGERPRINT = {
-    "canvas": hashlib.md5(b"win10_chrome131").hexdigest(),
-    "webglVendor": "Google Inc. (NVIDIA)",
-    "webglRenderer": (
-        "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Ti "
-        "Direct3D11 vs_5_0 ps_5_0, D3D11)"
-    ),
-    "audioHash": hashlib.md5(b"audioctx").hexdigest(),
-    "screenWidth": 1920, "screenHeight": 1080, "colorDepth": 24,
-    "pixelRatio": 1.0,
-    "timezone": "America/New_York", "timezoneOffset": -300,
-    "language": "en-US", "languages": ["en-US", "en"],
-    "platform": "Win32", "deviceMemory": 8, "hardwareConcurrency": 12,
-    "maxTouchPoints": 0, "touchSupport": False, "pdfViewerEnabled": True,
-    "webglVersion": "WebGL 2.0",
-    "webglShadingLanguageVersion": "WebGL GLSL ES 3.00",
-    "cookiesEnabled": True, "doNotTrack": None,
-    "plugins": (
-        "PDF Viewer,Chrome PDF Viewer,Chromium PDF Viewer,"
-        "Microsoft Edge PDF Viewer,WebKit built-in PDF"
-    ),
-    "storageEstimate": 1073741824,
-    "connectionType": "4g", "connectionDownlink": 10,
-    "connectionRtt": 50, "connectionSaveData": False,
-}
+
+# ═══════════════════════════════════════════
+#  BROWSER CLIENT FINGERPRINT
+# ═══════════════════════════════════════════
+
+def make_client_fingerprint():
+    """
+    Build the 'client' object matching what the real browser sends
+    to /api/videos/access/attest.
+    """
+    return {
+        "user_agent": UA,
+        "architecture": "x86",
+        "bitness": "64",
+        "platform": "Windows",
+        "platform_version": "10.0.0",
+        "model": "",
+        "ua_full_version": "131.0.0.0",
+        "brand_full_versions": [
+            {"brand": "Chromium", "version": "131.0.0.0"},
+            {"brand": "Not-A.Brand", "version": "24.0.0.0"},
+            {"brand": "Google Chrome", "version": "131.0.0.0"},
+        ],
+        "pixel_ratio": 1,
+        "screen_width": 1920,
+        "screen_height": 1080,
+        "color_depth": 32,
+        "languages": ["en-US", "en"],
+        "timezone": "Asia/Calcutta",
+        "hardware_concurrency": 8,
+        "device_memory": 8,
+        "touch_points": 0,
+        "webgl_vendor": "Google Inc. (AMD)",
+        "webgl_renderer": (
+            "ANGLE (AMD, AMD Radeon(TM) Vega 8 Graphics (0x000015D8) "
+            "Direct3D11 vs_5_0 ps_5_0, D3D11)"
+        ),
+        "canvas_hash": hashlib.sha256(b"canvas_fp_v1").hexdigest(),
+        "audio_hash": hashlib.sha256(b"audio_fp_v1").hexdigest(),
+        "pointer_type": "fine,hover",
+        "extra": {
+            "vendor": "Google Inc.",
+            "appVersion": UA,
+        },
+    }
+
+
+def make_storage(viewer_id, device_id):
+    """Build the 'storage' object."""
+    return {
+        "cookie": viewer_id,
+        "local_storage": viewer_id,
+        "indexed_db": "%s:%s" % (viewer_id, device_id),
+        "cache_storage": "%s:%s" % (viewer_id, device_id),
+    }
+
+
+def make_attributes():
+    """Build the 'attributes' object."""
+    return {
+        "entropy": "high",
+    }
 
 
 # ═══════════════════════════════════════════
@@ -71,15 +108,20 @@ _sessions = {}
 def get_session(sid):
     """Get or create user session dict."""
     if sid not in _sessions:
+        vid = uuid.uuid4().hex
+        did = uuid.uuid4().hex
         _sessions[sid] = {
             "id": sid,
+            "viewer_id": vid,
+            "device_id": did,
             "challenge_id": None,
             "nonce": None,
             "token": None,
             "code": None,
             "private_key": None,
-            "pub_raw": None,
-            "pub_spki": None,
+            "pub_jwk": None,       # JWK dict: {crv, ext, key_ops, kty, x, y}
+            "pub_raw": None,       # base64url uncompressed point
+            "pub_spki": None,      # base64url SPKI DER
             "playback_body": None,
         }
     return _sessions[sid]
@@ -175,32 +217,59 @@ def b64url_encode(data):
 def generate_keypair():
     """
     Generate ECDSA P-256 key pair.
-    Returns (private_key, pub_raw_b64url, pub_spki_b64url).
-    Needs: pip install cryptography
+    Returns (private_key, pub_jwk_dict, pub_raw_b64url, pub_spki_b64url).
+
+    pub_jwk_dict is the JWK format:
+      {
+        "crv": "P-256",
+        "ext": true,
+        "key_ops": ["verify"],
+        "kty": "EC",
+        "x": "base64url_x_coord",
+        "y": "base64url_y_coord"
+      }
     """
     from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.hazmat.primitives import serialization
+
     pk = ec.generate_private_key(ec.SECP256R1())
+
+    # Uncompressed point: 04 || x(32) || y(32)
     raw = pk.public_key().public_bytes(
         serialization.Encoding.X962,
         serialization.PublicFormat.UncompressedPoint,
     )
+    x_bytes = raw[1:33]   # skip 0x04 prefix
+    y_bytes = raw[33:65]
+
+    # JWK
+    jwk = {
+        "crv": "P-256",
+        "ext": True,
+        "key_ops": ["verify"],
+        "kty": "EC",
+        "x": b64url_encode(x_bytes),
+        "y": b64url_encode(y_bytes),
+    }
+
+    # SPKI DER (for reference)
     spki = pk.public_key().public_bytes(
         serialization.Encoding.DER,
         serialization.PublicFormat.SubjectPublicKeyInfo,
     )
-    return pk, b64url_encode(raw), b64url_encode(spki)
+
+    return pk, jwk, b64url_encode(raw), b64url_encode(spki)
 
 
 def sign_nonce(private_key, nonce):
     """
     Sign nonce with ECDSA P-256 SHA-256.
     Returns base64url raw signature (r || s, 64 bytes).
-    Needs: pip install cryptography
     """
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+
     nb = nonce.encode("utf-8") if isinstance(nonce, str) else nonce
     der_sig = private_key.sign(nb, ec.ECDSA(hashes.SHA256()))
     r, s = decode_dss_signature(der_sig)
@@ -212,9 +281,9 @@ def decrypt_payload(encrypted):
     """
     Decrypt AES-256-GCM payload.
     Key = concat(base64url_decode(part) for each key_parts[]).
-    Needs: pip install cryptography
     """
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
     parts = encrypted.get("key_parts", [])
     iv_b64 = encrypted.get("iv", "")
     payload_b64 = encrypted.get("payload", "")
