@@ -123,6 +123,9 @@ def get_session(sid):
             "pub_raw": None,       # base64url uncompressed point
             "pub_spki": None,      # base64url SPKI DER
             "playback_body": None,
+            "server_viewer_id": None,
+            "server_device_id": None,
+            "confidence": None,
         }
     return _sessions[sid]
 
@@ -176,6 +179,16 @@ def http_get(url, timeout=20):
         return r.status_code, r.text[:10000], dict(r.headers)
     except Exception as e:
         return None, str(e), {}
+
+
+def set_cookies(cookie_dict):
+    """Set cookies on the shared HTTP session."""
+    sess, _ = get_http_client()
+    if sess is None:
+        return
+    for k, v in cookie_dict.items():
+        sess.cookies.set(k, v, domain="f75s.com")
+    print("[http] Cookies set: %s" % list(cookie_dict.keys()))
 
 
 def http_post(url, body=None, extra_headers=None, timeout=20):
