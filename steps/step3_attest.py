@@ -3,17 +3,16 @@ step3_attest.py
 
 POST /api/videos/access/attest — sign nonce, send fingerprint, get token.
 
-If this fails:
-  - 400 = bad request body format
-  - 401 = signature verification failed
-  - 403 = CF blocking or invalid fingerprint
-  - 422 = validation error (field names wrong)
+The exact request format is unknown (hidden in index-DD6OUyti.js).
+This file tries MULTIPLE formats and dumps every attempt.
 
-This tries TWO key formats:
-  1. Raw X.962 (uncompressed point) — what browser WebCrypto produces
-  2. SPKI (DER SubjectPublicKeyInfo) — alternative format
+Errors:
+  - "challenge id required" → missing challenge_id
+  - "public key required"   → missing public_key field
+  - "invalid payload"       → body format/structure is wrong
 """
 
+import json
 import time
 from helpers import (
     BASE_URL, http_post, sign_nonce, FINGERPRINT, get_session
@@ -21,100 +20,161 @@ from helpers import (
 
 
 def run(sid):
-    """
-    Step 3: Sign nonce + POST attest → get token.
-    Returns dict with token, signature, timing.
-    """
     sess = get_session(sid)
     t0 = time.time()
     url = BASE_URL + "/api/videos/access/attest"
 
-    # Validate prerequisites
+    # Prerequisites
     if not sess.get("nonce"):
-        return {
-            "step": "3-attest",
-            "error": "No nonce. Run step 2 first.",
-            "fix": "Click step 2 button first",
-        }
+        return {"step": "3-attest", "error": "No nonce. Run step 2 first."}
     if not sess.get("private_key"):
-        return {
-            "step": "3-attest",
-            "error": "No keypair. Run step 2 first.",
-            "fix": "Click step 2 button first",
-        }
+        return {"step": "3-attest", "error": "No keypair. Run step 2 first."}
 
     nonce = sess["nonce"]
-
-    # Sign the nonce
-    try:
-        signature = sign_nonce(sess["private_key"], nonce)
-    except ImportError:
-        return {
-            "step": "3-attest",
-            "error": "cryptography not installed",
-            "fix": "pip install cryptography",
-        }
-    except Exception as e:
-        return {
-            "step": "3-attest",
-            "error": "Signing failed: %s" % e,
-        }
-
-    # Get challenge_id from step 2
     challenge_id = sess.get("challenge_id", "")
 
-    # Build attestation request body
-    # IMPORTANT: server uses snake_case field names!
-    attest_body = {
-        "challenge_id": challenge_id,
-        "nonce": nonce,
-        "signature": signature,
-        "public_key": sess["pub_raw"],
-        "fingerprint": FINGERPRINT,
-    }
+    # Sign
+    try:
+        signature = sign_nonce(sess["private_key"], nonce)
+    except Exception as e:
+        return {"step": "3-attest", "error": "Signing failed: %s" % e}
 
-    result = {
-        "step": "3-attest",
-        "url": url,
-        "timeMs": 0,
-        "requestBody": {
-            "challenge_id": challenge_id,
-            "nonce": nonce[:30] + "...",
-            "signature": signature[:30] + "...",
-            "public_key": sess["pub_raw"][:30] + "...",
-            "fingerprintKeys": list(FINGERPRINT.keys()),
+    sig_full = signature
+    pk_raw = sess["pub_raw"]
+    pk_spki = sess["pub_spki"]
+
+    result = {"step": "3-attest", "url": url, "attempts": []}
+
+    # ── Try multiple body formats ──
+
+    formats = [
+        {
+            "name": "A: flat snake_case (challenge_id, nonce, signature, public_key, fingerprint)",
+            "body": {
+                "challenge_id": challenge_id,
+                "nonce": nonce,
+                "signature": signature,
+                "public_key": pk_raw,
+                "fingerprint": FINGERPRINT,
+            },
         },
-    }
+        {
+            "name": "B: nested under 'attestation'",
+            "body": {
+                "attestation": {
+                    "challenge_id": challenge_id,
+                    "nonce": nonce,
+                    "signature": signature,
+                    "public_key": pk_raw,
+                    "fingerprint": FINGERPRINT,
+                },
+            },
+        },
+        {
+            "name": "C: 'data' wrapper with public_key as array",
+            "body": {
+                "challenge_id": challenge_id,
+                "data": {
+                    "nonce": nonce,
+                    "signature": signature,
+                    "public_key": pk_raw,
+                    "fingerprint": FINGERPRINT,
+                },
+            },
+        },
+        {
+            "name": "D: camelCase keys",
+            "body": {
+                "challengeId": challenge_id,
+                "nonce": nonce,
+                "signature": signature,
+                "publicKey": pk_raw,
+                "fingerprint": FINGERPRINT,
+            },
+        },
+        {
+            "name": "E: no fingerprint field",
+            "body": {
+                "challenge_id": challenge_id,
+                "nonce": nonce,
+                "signature": signature,
+                "public_key": pk_raw,
+            },
+        },
+        {
+            "name": "F: with SPKI key",
+            "body": {
+                "challenge_id": challenge_id,
+                "nonce": nonce,
+                "signature": signature,
+                "public_key": pk_spki,
+                "fingerprint": FINGERPRINT,
+            },
+        },
+        {
+            "name": "G: signature as array [r, s]",
+            "body": {
+                "challenge_id": challenge_id,
+                "nonce": nonce,
+                "signature": [signature],  # try as array
+                "public_key": pk_raw,
+                "fingerprint": FINGERPRINT,
+            },
+        },
+        {
+            "name": "H: minimal - just challenge_id + nonce + signature + public_key",
+            "body": {
+                "challenge_id": challenge_id,
+                "nonce": nonce,
+                "signature": signature,
+                "public_key": pk_raw,
+            },
+        },
+    ]
 
-    # Try 1: Raw X.962 key format
-    status, body, _ = http_post(url, body=attest_body)
-    ms = int((time.time() - t0) * 1000)
-    result["httpStatus"] = status
-    result["timeMs"] = ms
-    result["attempt1"] = {"status": status, "body": body}
+    for fmt in formats:
+        body_to_send = fmt["body"]
+        # Show full JSON being sent
+        raw_json = json.dumps(body_to_send, separators=(",", ":"))
+        if len(raw_json) > 500:
+            raw_json_show = raw_json[:250] + "..." + raw_json[-250:]
+        else:
+            raw_json_show = raw_json
 
-    # If failed, try 2: SPKI key format
-    if status != 200 and sess.get("pub_spki"):
-        attest_body["public_key"] = sess["pub_spki"]
-        status2, body2, _ = http_post(url, body=attest_body)
-        ms2 = int((time.time() - t0) * 1000)
-        result["attempt2"] = {"status": status2, "body": body2, "timeMs": ms2}
-        result["httpStatus"] = status2
-        result["timeMs"] = ms2
-        if status2 == 200:
-            status = 200
-            body = body2
+        status, resp_body, _ = http_post(url, body=body_to_send)
+        ms = int((time.time() - t0) * 1000)
 
-    result["responseBody"] = body
+        attempt = {
+            "name": fmt["name"],
+            "status": status,
+            "response": resp_body,
+            "sentJsonPreview": raw_json_show,
+            "sentFieldCount": len(body_to_send),
+            "sentTopKeys": list(body_to_send.keys()),
+        }
 
-    # Check for token
-    if isinstance(body, dict) and body.get("token"):
-        sess["token"] = body["token"]
-        result["token"] = body["token"]
-        result["tokenPreview"] = body["token"][:30] + "..."
-    else:
-        result["tokenFound"] = False
-        if isinstance(body, dict):
-            result["responseKeys"] = list(body.keys())
+        # Check nested keys
+        for k, v in body_to_send.items():
+            if isinstance(v, dict):
+                attempt["nestedKeys_%s" % k] = list(v.keys())
+
+        result["attempts"].append(attempt)
+
+        if status == 200:
+            result["httpStatus"] = 200
+            result["timeMs"] = ms
+            result["winner"] = fmt["name"]
+            result["responseBody"] = resp_body
+            if isinstance(resp_body, dict) and resp_body.get("token"):
+                sess["token"] = resp_body["token"]
+                result["token"] = resp_body["token"]
+                result["tokenFound"] = True
+            return result
+
+    # All attempts failed
+    result["httpStatus"] = 400
+    result["timeMs"] = int((time.time() - t0) * 1000)
+    result["tokenFound"] = False
+    result["hint"] = "All formats failed. Share this output - we need to see which format the server accepts."
 
     return result
