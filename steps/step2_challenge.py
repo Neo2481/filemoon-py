@@ -35,12 +35,17 @@ def run(sid):
         "responseBody": body,
     }
 
-    # Check if we got a nonce
+    # Check if we got a nonce and challenge_id
     if isinstance(body, dict) and body.get("nonce"):
         nonce = body["nonce"]
         sess["nonce"] = nonce
         result["nonce"] = nonce
         result["noncePreview"] = nonce[:30] + "..."
+
+        # IMPORTANT: Save challenge_id — step 3 needs it!
+        challenge_id = body.get("challenge_id", "")
+        sess["challenge_id"] = challenge_id
+        result["challenge_id"] = challenge_id
 
         # Generate ECDSA P-256 keypair for step 3
         try:
