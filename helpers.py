@@ -1,5 +1,5 @@
 """
-helpers.py — Shared config, crypto, and HTTP client.
+helpers.py — Shared config, crypto, and HTTP client with proxy support.
 
 If this file fails to import, NOTHING works.
 Check: pip install cryptography requests curl_cffi
@@ -18,11 +18,30 @@ UA = (
     "Chrome/131.0.0.0 Safari/537.36"
 )
 
+# ═══════════════════════════════════════════
+#  PROXY CONFIG — Webshare rotating residential proxy
+# ═══════════════════════════════════════════
+
+PROXY_ENABLED = True
+PROXY_HOST = "p.webshare.io"
+PROXY_PORT = 80
+PROXY_USER = "qijlkvsz-rotate"
+PROXY_PASS = "viryx2zv5njj"
+PROXY_URL = "http://%s:%s@%s:%d" % (PROXY_USER, PROXY_PASS, PROXY_HOST, PROXY_PORT)
+PROXIES = {
+    "http": PROXY_URL,
+    "https": PROXY_URL,
+}
+
+# ═══════════════════════════════════════════
+#  HEADERS
+# ═══════════════════════════════════════════
+
 API_HEADERS = {
     "User-Agent": UA,
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
     "Content-Type": "application/json",
     "Origin": BASE_URL,
     "Referer": BASE_URL + "/",
@@ -119,9 +138,9 @@ def get_session(sid):
             "token": None,
             "code": None,
             "private_key": None,
-            "pub_jwk": None,       # JWK dict: {crv, ext, key_ops, kty, x, y}
-            "pub_raw": None,       # base64url uncompressed point
-            "pub_spki": None,      # base64url SPKI DER
+            "pub_jwk": None,
+            "pub_raw": None,
+            "pub_spki": None,
             "playback_body": None,
             "server_viewer_id": None,
             "server_device_id": None,
@@ -131,7 +150,7 @@ def get_session(sid):
 
 
 # ═══════════════════════════════════════════
-#  HTTP CLIENT
+#  HTTP CLIENT (with proxy)
 # ═══════════════════════════════════════════
 
 _http_session = None
@@ -139,17 +158,22 @@ _http_type = None
 
 
 def get_http_client():
-    """Get HTTP session. Returns (session, type_string)."""
+    """Get HTTP session with proxy. Returns (session, type_string)."""
     global _http_session, _http_type
     if _http_session is not None:
         return _http_session, _http_type
 
+    proxy_kw = {"proxies": PROXIES} if PROXY_ENABLED else {}
+
     # Try curl_cffi first (Chrome TLS fingerprint)
     try:
         from curl_cffi.requests import Session
-        _http_session = Session(impersonate="chrome")
+        _http_session = Session(impersonate="chrome", **proxy_kw)
         _http_type = "curl_cffi"
-        print("[http] Using curl_cffi (Chrome TLS impersonation)")
+        if PROXY_ENABLED:
+            print("[http] curl_cffi + Webshare proxy (%s)" % PROXY_HOST)
+        else:
+            print("[http] Using curl_cffi (NO proxy)")
         return _http_session, _http_type
     except ImportError:
         print("[http] curl_cffi not available, trying requests...")
@@ -161,15 +185,19 @@ def get_http_client():
         import requests
         _http_session = requests.Session()
         _http_session.headers.update(API_HEADERS)
+        if PROXY_ENABLED:
+            _http_session.proxies.update(PROXIES)
+            print("[http] requests + Webshare proxy (%s)" % PROXY_HOST)
+        else:
+            print("[http] Using requests (NO proxy, NO TLS impersonation)")
         _http_type = "requests"
-        print("[http] Using requests (NO TLS impersonation)")
         return _http_session, _http_type
     except ImportError:
         print("[http] requests not available either!")
         return None, "none"
 
 
-def http_get(url, timeout=20):
+def http_get(url, timeout=30):
     """GET request. Returns (status_code, text, headers_dict)."""
     sess, _ = get_http_client()
     if sess is None:
@@ -191,7 +219,7 @@ def set_cookies(cookie_dict):
     print("[http] Cookies set: %s" % list(cookie_dict.keys()))
 
 
-def http_post(url, body=None, extra_headers=None, timeout=20):
+def http_post(url, body=None, extra_headers=None, timeout=30):
     """POST request. Returns (status_code, body, headers_dict)."""
     sess, _ = get_http_client()
     if sess is None:
@@ -231,16 +259,6 @@ def generate_keypair():
     """
     Generate ECDSA P-256 key pair.
     Returns (private_key, pub_jwk_dict, pub_raw_b64url, pub_spki_b64url).
-
-    pub_jwk_dict is the JWK format:
-      {
-        "crv": "P-256",
-        "ext": true,
-        "key_ops": ["verify"],
-        "kty": "EC",
-        "x": "base64url_x_coord",
-        "y": "base64url_y_coord"
-      }
     """
     from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.hazmat.primitives import serialization
