@@ -11,7 +11,7 @@ import os, json, base64, hashlib, time, uuid
 #  CONFIG
 # ═══════════════════════════════════════════
 
-BASE_URL = "https://bysesayeveum.com"
+BASE_URL = "https://f75s.com"
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -27,11 +27,18 @@ PROXY_HOST = "p.webshare.io"
 PROXY_PORT = 80
 PROXY_USER = "qijlkvsz-rotate"
 PROXY_PASS = "viryx2zv5njj"
-PROXY_URL = "http://%s:%s@%s:%d" % (PROXY_USER, PROXY_PASS, PROXY_HOST, PROXY_PORT)
+
+# Sticky session: same IP for ALL requests in this session
+# Without this, rotating proxy gives different IP per request
+# -> server sees multiple IPs -> low confidence -> fake CDN URLs
+_proxy_session = uuid.uuid4().hex[:10]
+PROXY_USER_STICKY = "%s_session-%s" % (PROXY_USER, _proxy_session)
+PROXY_URL = "http://%s:%s@%s:%d" % (PROXY_USER_STICKY, PROXY_PASS, PROXY_HOST, PROXY_PORT)
 PROXIES = {
     "http": PROXY_URL,
     "https": PROXY_URL,
 }
+print("[proxy] Sticky session: %s (same IP for all requests)" % _proxy_session)
 
 # ═══════════════════════════════════════════
 #  HEADERS
@@ -195,6 +202,20 @@ def get_http_client():
     except ImportError:
         print("[http] requests not available either!")
         return None, "none"
+
+
+def check_my_ip():
+    """Check what IP the proxy is using. Returns IP string or error."""
+    sess, _ = get_http_client()
+    if sess is None:
+        return "no client"
+    try:
+        r = sess.get("https://api.ipify.org?format=json", timeout=10)
+        if r.status_code == 200:
+            return r.json().get("ip", "unknown")
+        return "status %d" % r.status_code
+    except Exception as e:
+        return str(e)
 
 
 def http_get(url, timeout=30):
