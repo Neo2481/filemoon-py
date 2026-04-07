@@ -132,6 +132,7 @@ def step1():
 
 @app.route("/api/step2-challenge", methods=["POST"])
 def step2():
+    import time; time.sleep(1)  # delay to mimic browser
     try:
         from steps.step2_challenge import run
         data = flask_req.get_json(silent=True) or {}
@@ -150,6 +151,7 @@ def step2():
 
 @app.route("/api/step3-attest", methods=["POST"])
 def step3():
+    import time; time.sleep(2)  # delay to mimic browser
     try:
         from steps.step3_attest import run
         data = flask_req.get_json(silent=True) or {}
@@ -168,6 +170,7 @@ def step3():
 
 @app.route("/api/step4-playback", methods=["POST"])
 def step4():
+    import time; time.sleep(2)  # delay to mimic browser
     try:
         from steps.step4_playback import run
         data = flask_req.get_json(silent=True) or {}
