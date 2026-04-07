@@ -11,7 +11,7 @@ import os, json, base64, hashlib, time, uuid
 #  CONFIG
 # ═══════════════════════════════════════════
 
-BASE_URL = "https://arbitrarydecisions.com"
+BASE_URL = "https://f75s.com"
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -28,17 +28,19 @@ PROXY_PORT = 80
 PROXY_USER = "qijlkvsz-rotate"
 PROXY_PASS = "viryx2zv5njj"
 
-# Sticky session: same IP for ALL requests in this session
-# Without this, rotating proxy gives different IP per request
-# -> server sees multiple IPs -> low confidence -> fake CDN URLs
-_proxy_session = uuid.uuid4().hex[:10]
-PROXY_USER_STICKY = "%s_session-%s" % (PROXY_USER, _proxy_session)
+# Sticky session: same IP for ALL requests in this server session
+# Webshare format: replace "-rotate" with "_session-<id>"
+# Wrong: qijlkvsz-rotate_session-abc (auth fails with 407)
+# Right: qijlkvsz_session-abc (keeps same exit IP for ~10 min)
+_proxy_session = uuid.uuid4().hex[:8]
+PROXY_USER_STICKY = "qijlkvsz_session-%s" % _proxy_session
 PROXY_URL = "http://%s:%s@%s:%d" % (PROXY_USER_STICKY, PROXY_PASS, PROXY_HOST, PROXY_PORT)
 PROXIES = {
     "http": PROXY_URL,
     "https": PROXY_URL,
 }
-print("[proxy] Sticky session: %s (same IP for all requests)" % _proxy_session)
+print("[proxy] Sticky session user: %s" % PROXY_USER_STICKY)
+print("[proxy] Same exit IP will be used for all requests")
 
 # ═══════════════════════════════════════════
 #  HEADERS
