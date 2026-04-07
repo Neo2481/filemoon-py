@@ -11,7 +11,7 @@ import os, json, base64, hashlib, time, uuid
 #  CONFIG
 # ═══════════════════════════════════════════
 
-BASE_URL = "https://f75s.com"
+BASE_URL = "https://arbitrarydecisions.com"
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
